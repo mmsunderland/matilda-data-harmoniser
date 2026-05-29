@@ -1,0 +1,17 @@
+/* Generated code panel */
+#generated_code {
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  background: #f8f9fa;
+  color: #212529;
+  padding: 1rem 1.25rem;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  min-height: 320px;
+  max-height: 65vh;
+  overflow: auto;
+  white-space: pre;
+  display: block;
+}
