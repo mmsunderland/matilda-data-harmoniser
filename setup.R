@@ -1,6 +1,6 @@
 # setup.R — install required packages for the Data Harmonisation Assistant
 
-pkgs <- c("shiny", "bslib", "DT", "dplyr", "haven", "readr")
+pkgs <- c("shiny", "bslib", "DT", "dplyr", "haven", "readr", "tidyr", "purrr", "htmltools")
 
 to_install <- pkgs[!pkgs %in% installed.packages()[, "Package"]]
 
