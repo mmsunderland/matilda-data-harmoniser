@@ -88,7 +88,57 @@ parse_dct <- function(filepath) {
 
 
 # ---------------------------------------------------------------------------
-# load_all_dcts() — variable metadata for a whole folder
+# Wave-structure detection
+# ---------------------------------------------------------------------------
+
+.hm_wave_patterns <- list(
+  # With underscore separator
+  "^(T)(\\d+)_", "^(Time)(\\d+)_", "^(W)(\\d+)_",
+  "^(Wave)(\\d+)_", "^(w)(\\d+)_", "^(t)(\\d+)_",
+  # Without underscore separator: T1age, w2score, Time3var, etc.
+  "^(T)(\\d+)(?=[a-zA-Z])", "^(Time)(\\d+)(?=[a-zA-Z])",
+  "^(W)(\\d+)(?=[a-zA-Z])", "^(Wave)(\\d+)(?=[a-zA-Z])",
+  "^(w)(\\d+)(?=[a-zA-Z])", "^(t)(\\d+)(?=[a-zA-Z])"
+)
+
+detect_wave_prefix <- function(var_name) {
+  for (pat in .hm_wave_patterns) {
+    m <- regexpr(pat, var_name, perl = TRUE)
+    if (m[1L] != -1L) {
+      caps <- attr(m, "capture.start")
+      lens <- attr(m, "capture.length")
+      pfx  <- substr(var_name, caps[1L], caps[1L] + lens[1L] - 1L)
+      num  <- substr(var_name, caps[2L], caps[2L] + lens[2L] - 1L)
+      return(list(has_wave   = TRUE,
+                  wave_num   = as.integer(num),
+                  wave_label = paste0(pfx, num),
+                  base_var   = substring(var_name, attr(m, "match.length") + 1L)))
+    }
+  }
+  list(has_wave = FALSE, wave_num = NA_integer_,
+       wave_label = NA_character_, base_var = var_name)
+}
+
+standardise_wave_label <- function(lbl) {
+  if (is.na(lbl) || nchar(lbl) == 0L) return(NA_character_)
+  num <- sub("^[A-Za-z]+(\\d+)$", "\\1", lbl, perl = TRUE)
+  if (identical(num, lbl)) return(lbl)
+  paste0("W", num)
+}
+
+parse_wave_structure_app <- function(vars_df) {
+  results <- lapply(vars_df$var_name, detect_wave_prefix)
+  vars_df$has_wave       <- vapply(results, `[[`, logical(1L),   "has_wave")
+  vars_df$wave_num       <- vapply(results, `[[`, integer(1L),   "wave_num")
+  vars_df$wave_label     <- vapply(results, `[[`, character(1L), "wave_label")
+  vars_df$wave_label_std <- vapply(vars_df$wave_label, standardise_wave_label, character(1L))
+  vars_df$base_var       <- vapply(results, `[[`, character(1L), "base_var")
+  vars_df
+}
+
+
+# ---------------------------------------------------------------------------
+# load_all_dcts() — variable metadata for a whole folder (with wave parsing)
 # ---------------------------------------------------------------------------
 
 load_all_dcts <- function(folder_path) {
@@ -101,7 +151,7 @@ load_all_dcts <- function(folder_path) {
 
   all_vars <- do.call(rbind, lapply(dct_files, parse_dct))
   rownames(all_vars) <- NULL
-  all_vars
+  parse_wave_structure_app(all_vars)
 }
 
 

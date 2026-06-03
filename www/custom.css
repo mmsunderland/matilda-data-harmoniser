@@ -15,3 +15,27 @@
   white-space: pre;
   display: block;
 }
+
+/* Plan table — compact rows */
+#plan_table table.dataTable tbody tr td {
+  padding: 4px 6px !important;
+  vertical-align: middle !important;
+}
+
+/* Plan table — recode status left borders */
+#plan_table table.dataTable tbody tr.recode-pending td:first-child   { border-left: 3px solid #ffc107 !important; }
+#plan_table table.dataTable tbody tr.recode-confirmed td:first-child  { border-left: 3px solid #198754 !important; }
+#plan_table table.dataTable tbody tr.recode-incompatible td:first-child { border-left: 3px solid #dc3545 !important; }
+
+/* Selectize dropdowns in plan toolbar — allow overflow */
+#plan_toolbar .selectize-dropdown { z-index: 9999 !important; }
+
+/* btn-xs utility */
+.btn-xs {
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+/* Editing toolbar highlight */
+.border-primary { border-color: #0d6efd !important; }
