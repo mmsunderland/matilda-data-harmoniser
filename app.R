@@ -1,3 +1,37 @@
+# ── Package bootstrap ──────────────────────────────────────────────────────────
+# Explicitly declare all required packages so Posit Connect Cloud
+# installs them correctly during deployment
+required_packages <- c(
+  "shiny",
+  "bslib",
+  "DT",
+  "dplyr",
+  "readr",
+  "tidyr",
+  "stringr",
+  "purrr",
+  "htmltools",
+  "shinyjs",
+  "jsonlite",
+  "yaml",
+  "igraph",
+  "stringdist",
+  "tidytext",
+  "Matrix",
+  "httr2",
+  "cli",
+  "clipr"
+)
+
+missing_pkgs <- required_packages[
+  !sapply(required_packages, requireNamespace, quietly = TRUE)
+]
+
+if (length(missing_pkgs) > 0) {
+  install.packages(missing_pkgs, repos = "https://cloud.r-project.org")
+}
+# ── End package bootstrap ──────────────────────────────────────────────────────
+
 library(shiny)
 library(bslib)
 library(DT)
