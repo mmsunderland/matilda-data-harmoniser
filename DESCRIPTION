@@ -1,0 +1,30 @@
+Package: matilda-data-harmoniser
+Title: MATILDA Data Harmonisation Assistant
+Version: 1.0.0
+Description: Shiny app for harmonising population health survey data.
+Authors@R: person("Matt", "Sunderland", role = c("aut", "cre"),
+             email = "example@example.com")
+Depends:
+    R (>= 4.4.0)
+Imports:
+    shiny,
+    bslib,
+    DT,
+    dplyr,
+    readr,
+    tidyr,
+    stringr,
+    purrr,
+    htmltools,
+    shinyjs,
+    jsonlite,
+    yaml,
+    stringdist,
+    tidytext,
+    Matrix,
+    httr2,
+    cli,
+    igraph,
+    SnowballC
+Encoding: UTF-8
+License: MIT
