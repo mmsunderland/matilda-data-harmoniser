@@ -1,7 +1,26 @@
+# ── Required packages ─────────────────────────────────────────────────────────
+# All library() calls must be explicit so Posit Connect Cloud
+# detects them during dependency scanning
 library(shiny)
 library(bslib)
 library(DT)
 library(dplyr)
+library(readr)
+library(tidyr)
+library(stringr)
+library(purrr)
+library(htmltools)
+library(shinyjs)
+library(jsonlite)
+library(yaml)
+library(stringdist)
+library(tidytext)
+library(Matrix)
+library(httr2)
+library(cli)
+library(igraph)
+library(SnowballC)
+# ── End required packages ──────────────────────────────────────────────────────
 
 source("R/parse_dct.R")
 source("R/code_generator.R")
