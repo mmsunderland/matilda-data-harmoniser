@@ -11,7 +11,6 @@ source("R/code_generator.R")
 .DL_PATH        <- file.path(.PIPELINE_DIR, "domain_labels.csv")
 .HC_PATH        <- file.path(.PIPELINE_DIR, "harmonisation_candidates.csv")
 .RR_PATH        <- file.path(.PIPELINE_DIR, "recode_rules.csv")
-.STATE_PATH     <- file.path(.PIPELINE_DIR, "app_state.rds")
 
 .pipeline_available <- function() file.exists(.DL_PATH) && file.exists(.HC_PATH)
 
@@ -369,8 +368,6 @@ ui <- fluidPage(
     uiOutput("pending_queue_ui")
   ),
 
-  # Restore session modal
-  uiOutput("restore_modal_ui")
 )
 
 # ── Server ─────────────────────────────────────────────────────────────────────
@@ -406,7 +403,6 @@ server <- function(input, output, session) {
     search_page              = 1L,
     pending_queue            = data.frame(dataset=character(), base_var=character(),
                                           var_label=character(), stringsAsFactors=FALSE),
-    restore_offered          = FALSE,
     welcome_dismissed        = FALSE,
     info_bar_dismissed       = FALSE,
     recode_instructions_seen = FALSE,
@@ -463,12 +459,6 @@ server <- function(input, output, session) {
       .load_dct_fallback()
     }
 
-    # Check for saved state — isolate read to avoid feedback loop when user
-    # dismisses the modal (setting rv$restore_offered = FALSE would otherwise
-    # re-trigger this observe and immediately set it back to TRUE).
-    if (file.exists(.STATE_PATH) && !isolate(rv$restore_offered)) {
-      rv$restore_offered <- TRUE
-    }
   })
 
   .load_dct_fallback <- function() {
@@ -484,74 +474,6 @@ server <- function(input, output, session) {
     })
   }
 
-  # ── Restore session offer ────────────────────────────────────────────────────
-  output$restore_modal_ui <- renderUI({
-    if (!rv$restore_offered) return(NULL)
-    if (nrow(rv$constructs) > 0) return(NULL)  # already have data
-
-    info <- tryCatch({
-      s <- readRDS(.STATE_PATH)
-      mtime <- file.mtime(.STATE_PATH)
-      mins  <- as.integer(difftime(Sys.time(), mtime, units = "mins"))
-      nc    <- if (!is.null(s$constructs)) nrow(s$constructs) else 0L
-      list(mins = mins, nc = nc, state = s)
-    }, error = function(e) NULL)
-
-    if (is.null(info) || info$nc == 0L) { rv$restore_offered <- FALSE; return(NULL) }
-
-    div(
-      style = "position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:2000;width:440px;",
-      div(class = "card shadow",
-        div(class = "card-header d-flex justify-content-between align-items-center",
-          tags$strong("Restore previous session?"),
-          tags$button("×", class = "btn btn-sm btn-outline-secondary",
-                      onclick = "Shiny.setInputValue('dismiss_restore',Math.random(),{priority:'event'})")
-        ),
-        div(class = "card-body",
-          tags$p(class = "mb-3 small",
-            paste0("Session saved ", info$mins, " minute(s) ago with ",
-                   info$nc, " construct(s).")),
-          div(class = "d-flex gap-2",
-            actionButton("btn_restore_yes", "Restore", class = "btn btn-primary btn-sm"),
-            actionButton("btn_restore_no",  "Start fresh", class = "btn btn-outline-secondary btn-sm")
-          )
-        )
-      )
-    )
-  })
-
-  observeEvent(input$btn_restore_yes, {
-    tryCatch({
-      s <- readRDS(.STATE_PATH)
-      if (!is.null(s$constructs))   rv$constructs   <- s$constructs
-      if (!is.null(s$assignments))  rv$assignments   <- s$assignments
-      if (!is.null(s$recode_rules)) rv$recode_rules  <- s$recode_rules
-      rv$restore_offered <- FALSE
-      showNotification("Session restored.", type = "message", duration = 3L)
-    }, error = function(e) {
-      showNotification("Restore failed.", type = "error")
-      rv$restore_offered <- FALSE
-    })
-  })
-  observeEvent(input$btn_restore_no,     { rv$restore_offered <- FALSE })
-  observeEvent(input$dismiss_restore,    { rv$restore_offered <- FALSE })
-
-  # ── Auto-save ────────────────────────────────────────────────────────────────
-  auto_save_trigger <- reactive({
-    list(rv$constructs, rv$assignments, rv$recode_rules)
-  })
-  auto_save_debounced <- debounce(auto_save_trigger, 30000L)
-  observe({
-    auto_save_debounced()
-    if (nrow(isolate(rv$constructs)) == 0) return()
-    tryCatch({
-      saveRDS(list(
-        constructs   = isolate(rv$constructs),
-        assignments  = isolate(rv$assignments),
-        recode_rules = isolate(rv$recode_rules)
-      ), .STATE_PATH)
-    }, error = function(e) NULL)
-  })
 
   # ── Pre-computed search data (expensive collapse runs once when data loads) ──
   collapsed_vars <- reactive({
