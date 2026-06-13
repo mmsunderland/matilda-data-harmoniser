@@ -198,6 +198,7 @@
   if (is.null(all_vars)   || !"value_labels" %in% names(all_vars)) return(NULL)
 
   active_asgn <- assignments[!is.na(assignments$excluded) & !assignments$excluded &
+                               !is.na(assignments$base_var) &
                                (is.na(assignments$recode_status) | assignments$recode_status != "notfound"), ]
   if (nrow(active_asgn) == 0) return(NULL)
 
@@ -213,7 +214,8 @@
       hn  <- ds_asgn$harmonised_name[i]
       av_row <- all_vars[all_vars$dataset == ds &
                            (all_vars$var_name == bv |
-                            (!"base_var" %in% names(all_vars) || all_vars$base_var == bv)), ]
+                            ("base_var" %in% names(all_vars) & !is.na(all_vars$base_var) &
+                             all_vars$base_var == bv)), ]
       if (nrow(av_row) == 0 || !"value_labels" %in% names(av_row)) next
       lset <- av_row$value_labels[!is.na(av_row$value_labels) & nchar(av_row$value_labels) > 0]
       if (length(lset) == 0) next
@@ -231,6 +233,37 @@
   if (length(lines) <= 2) NULL else lines
 }
 
+# ── Wave range mismatch note ───────────────────────────────────────────────────
+.gen_wave_mismatch_comment <- function(datasets, all_vars) {
+  if (is.null(all_vars)) return(NULL)
+  if (!all(c("has_wave", "wave_num", "dataset") %in% names(all_vars))) return(NULL)
+
+  wave_ds <- all_vars[!is.na(all_vars$has_wave) & all_vars$has_wave &
+                        all_vars$dataset %in% datasets, , drop = FALSE]
+  if (nrow(wave_ds) == 0L) return(NULL)
+
+  max_per_ds <- tapply(wave_ds$wave_num, wave_ds$dataset, max, na.rm = TRUE)
+  max_per_ds <- max_per_ds[names(max_per_ds) %in% datasets]
+  if (length(unique(max_per_ds)) <= 1L) return(NULL)
+
+  overall_max <- max(max_per_ds)
+  ds_range_lines <- sapply(sort(names(max_per_ds)), function(ds)
+    paste0("#   ", ds, ": waves 1-", max_per_ds[[ds]]))
+
+  fewer_ds <- names(max_per_ds)[max_per_ds < overall_max]
+
+  c(
+    "# NOTE: Datasets have different numbers of waves.",
+    ds_range_lines,
+    paste0("# The combined dataset will have wave values 1-", overall_max, " overall."),
+    paste0("# For ", paste(fewer_ds, collapse = ", "),
+           ", no rows will exist for waves beyond their maximum"),
+    "# (not NA rows — simply absent). This is expected for",
+    "# repeated cross-sectional / panel data with different follow-up durations.",
+    ""
+  )
+}
+
 # ── Main entry point ───────────────────────────────────────────────────────────
 # constructs  : data.frame(harmonised_name, harmonised_label, domain, subdomain, notes)
 # assignments : data.frame(harmonised_name, dataset, base_var, recode_status, excluded)
@@ -242,6 +275,7 @@ generate_harmonisation_code <- function(constructs, assignments, recode_rules = 
                                          all_vars = NULL, all_labels = NULL) {
 
   active_asgn <- assignments[!is.na(assignments$excluded) & !assignments$excluded &
+                               !is.na(assignments$base_var) &
                                (is.na(assignments$recode_status) | assignments$recode_status != "notfound"), , drop=FALSE]
   if (is.null(constructs) || nrow(constructs) == 0 || nrow(active_asgn) == 0) {
     return(paste(
@@ -289,6 +323,9 @@ generate_harmonisation_code <- function(constructs, assignments, recode_rules = 
 
   ds_objs <- make.names(datasets)
 
+  wave_note <- .gen_wave_mismatch_comment(datasets, all_vars)
+  if (!is.null(wave_note)) out <- c(out, wave_note)
+
   for (i in seq_along(datasets)) {
     ds     <- datasets[i]
     ds_obj <- ds_objs[i]
@@ -327,17 +364,24 @@ generate_harmonisation_code <- function(constructs, assignments, recode_rules = 
 
   # Missing constructs per dataset (excluded or not found)
   for (hn in harm_names) {
-    excl_ds <- assignments$dataset[assignments$harmonised_name == hn &
-                                     (assignments$excluded | assignments$recode_status == "notfound")]
+    excl_mask <- assignments$harmonised_name == hn &
+                   (!is.na(assignments$excluded) & assignments$excluded |
+                    !is.na(assignments$recode_status) & assignments$recode_status == "notfound")
+    excl_ds <- assignments$dataset[!is.na(excl_mask) & excl_mask]
+    excl_ds <- excl_ds[!is.na(excl_ds)]
     if (length(excl_ds) > 0) {
       out <- c(out,
         paste0("# NOTE: '", hn, "' not included from: ", paste(excl_ds, collapse = ", "),
                " — will be NA for those datasets in the output"))
     }
   }
-  if (any(sapply(harm_names, function(hn)
-    any(assignments$harmonised_name == hn & (assignments$excluded | assignments$recode_status == "notfound"))
-  ))) out <- c(out, "")
+  has_excl <- any(sapply(harm_names, function(hn) {
+    m <- assignments$harmonised_name == hn &
+           (!is.na(assignments$excluded) & assignments$excluded |
+            !is.na(assignments$recode_status) & assignments$recode_status == "notfound")
+    any(!is.na(m) & m)
+  }))
+  if (has_excl) out <- c(out, "")
 
   out <- c(out,
     .rl("Stack all datasets"),

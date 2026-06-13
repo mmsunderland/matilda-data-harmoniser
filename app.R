@@ -30,6 +30,7 @@ source("R/code_generator.R")
 .DL_PATH        <- file.path(.PIPELINE_DIR, "domain_labels.csv")
 .HC_PATH        <- file.path(.PIPELINE_DIR, "harmonisation_candidates.csv")
 .RR_PATH        <- file.path(.PIPELINE_DIR, "recode_rules.csv")
+.VL_PATH        <- file.path(.PIPELINE_DIR, "value_labels.csv")
 
 .pipeline_available <- function() file.exists(.DL_PATH) && file.exists(.HC_PATH)
 
@@ -188,16 +189,44 @@ load_pipeline_constructs <- function(hc, all_vars) {
 wave_coverage_summary <- function(hn, assignments, all_vars) {
   asgn <- assignments[assignments$harmonised_name == hn & !assignments$excluded, , drop=FALSE]
   if (nrow(asgn) == 0 || is.null(all_vars) || !"has_wave" %in% names(all_vars)) return(NULL)
-  lines <- character(0)
-  for (i in seq_len(nrow(asgn))) {
+
+  ds_wave_nums <- lapply(seq_len(nrow(asgn)), function(i) {
     ds <- asgn$dataset[i]; bv <- asgn$base_var[i]
     wrows <- all_vars[all_vars$dataset == ds & !is.na(all_vars$has_wave) & all_vars$has_wave &
                         !is.na(all_vars$base_var) & all_vars$base_var == bv, ]
-    waves <- sort(unique(wrows$wave_label_std[!is.na(wrows$wave_label_std)]))
-    lines <- c(lines, paste0(ds, ": ", if (length(waves) == 0) "cross-sectional"
-                             else paste(waves, collapse = " ")))
+    nums <- suppressWarnings(sort(unique(as.integer(sub("T", "",
+              wrows$wave_label_std[!is.na(wrows$wave_label_std)])))))
+    nums[!is.na(nums)]
+  })
+  names(ds_wave_nums) <- asgn$dataset
+
+  # Filter to datasets with wave vars
+  has_waves <- sapply(ds_wave_nums, length) > 0
+  if (!any(has_waves)) return(NULL)
+  wave_sets <- ds_wave_nums[has_waves]
+
+  all_nums  <- sort(unique(unlist(wave_sets)))
+  if (length(all_nums) == 0) return(NULL)
+
+  union_str <- if (min(all_nums) == max(all_nums)) paste0("T", min(all_nums))
+               else paste0("T", min(all_nums), "-T", max(all_nums))
+
+  # Per-dataset compact range with subset annotation
+  ds_parts <- sapply(names(wave_sets), function(ds) {
+    nums <- wave_sets[[ds]]
+    rng  <- if (length(nums) == 1) paste0("T", nums)
+             else paste0("T", min(nums), "-T", max(nums))
+    others_union <- unlist(wave_sets[names(wave_sets) != ds])
+    is_sub <- length(others_union) > 0 && all(nums %in% others_union) &&
+              !setequal(nums, all_nums)
+    if (is_sub) paste0(ds, " ", rng, " (subset)") else paste0(ds, " ", rng)
+  })
+
+  if (length(wave_sets) == 1L) {
+    unname(ds_parts)
+  } else {
+    paste0(union_str, " (", paste(unname(ds_parts), collapse = "; "), ")")
   }
-  lines
 }
 
 get_value_labels <- function(ds, bv, all_vars, all_labels) {
@@ -207,6 +236,7 @@ get_value_labels <- function(ds, bv, all_vars, all_labels) {
                    (!is.na(all_vars$var_name) & all_vars$var_name == bv |
                     "base_var" %in% names(all_vars) & !is.na(all_vars$base_var) & all_vars$base_var == bv), ]
   if (nrow(av) == 0) return(NULL)
+  if ("var_type" %in% names(av) && !any(av$var_type == "haven_labelled", na.rm = TRUE)) return(NULL)
   lset <- av$value_labels[!is.na(av$value_labels) & nchar(av$value_labels) > 0]
   if (length(lset) == 0) return(NULL)
   lb <- all_labels[all_labels$dataset == ds & all_labels$label_set == lset[1L], ]
@@ -224,6 +254,7 @@ get_value_labels_fast <- function(ds, bv, all_vars, labels_index) {
      "base_var" %in% names(all_vars) & !is.na(all_vars$base_var) &
      all_vars$base_var == bv), ]
   if (nrow(av) == 0) return(NULL)
+  if ("var_type" %in% names(av) && !any(av$var_type == "haven_labelled", na.rm = TRUE)) return(NULL)
   lset <- av$value_labels[!is.na(av$value_labels) & nchar(av$value_labels) > 0]
   if (length(lset) == 0) return(NULL)
   key <- paste0(ds, "|||", lset[1L])
@@ -239,6 +270,14 @@ determine_recode_status <- function(hn, new_ds, new_bv,
   # "confirmed" = no recode needed (numeric or identical coding)
   # "pending"   = coding differences detected across datasets
   # "unreviewed" = could not determine (missing label data)
+
+  if (!is.null(all_vars) && "var_type" %in% names(all_vars)) {
+    av_row <- all_vars[!is.na(all_vars$dataset) & all_vars$dataset == new_ds &
+                         (!is.na(all_vars$var_name) & all_vars$var_name == new_bv |
+                          "base_var" %in% names(all_vars) & !is.na(all_vars$base_var) &
+                          all_vars$base_var == new_bv), ]
+    if (nrow(av_row) > 0 && !any(av_row$var_type == "haven_labelled", na.rm = TRUE)) return("confirmed")
+  }
 
   new_labels <- get_value_labels(new_ds, new_bv, all_vars, all_labels)
 
@@ -300,7 +339,7 @@ ui <- fluidPage(
   tags$head(
     tags$link(rel = "stylesheet", href = "custom.css"),
     tags$script(src = "custom.js"),
-    tags$title("Data Harmonisation Assistant")
+    tags$title("Matilda Merge - Data Harmonisation Assistant")
   ),
 
   # Fixed header
@@ -427,7 +466,8 @@ server <- function(input, output, session) {
     recode_instructions_seen = FALSE,
     detail_panels_opened     = 0L,
     selected_constructs      = character(0),   # harmonised_names ticked by user
-    show_selected_only       = FALSE
+    show_selected_only       = FALSE,
+    recode_reference         = list()          # named list: hn -> user-chosen reference dataset
   )
 
   # ── Startup: load data ───────────────────────────────────────────────────────
@@ -458,10 +498,17 @@ server <- function(input, output, session) {
         rv$hc       <- hc
         rv$all_datasets <- sort(unique(dl$dataset))
         rv$pipeline_loaded <- TRUE
-        tryCatch({
-          lb <- load_all_dct_labels("dct/")
-          rv$all_labels <- lb
-        }, error = function(e) NULL)
+        # Load value labels: prefer pipeline CSV, fall back to DCT files
+        if (file.exists(.VL_PATH)) {
+          tryCatch({
+            rv$all_labels <- read.csv(.VL_PATH, stringsAsFactors = FALSE,
+                                      na.strings = c("", "NA"))
+          }, error = function(e) NULL)
+        } else {
+          tryCatch({
+            rv$all_labels <- load_all_dct_labels("dct/")
+          }, error = function(e) NULL)
+        }
         # Load pipeline recode rules if non-empty
         if (file.exists(.RR_PATH)) {
           rr <- read.csv(.RR_PATH, stringsAsFactors = FALSE, na.strings = c("", "NA"))
@@ -634,7 +681,7 @@ server <- function(input, output, session) {
     if (rv$welcome_dismissed) return(NULL)
     div(class = "welcome-banner",
       div(class = "d-flex justify-content-between align-items-start mb-2",
-        tags$h5(class = "mb-0", "👋 Welcome to the Data Harmonisation Assistant"),
+        tags$h5(class = "mb-0", "👋 Welcome to the Matilda Merge - Data Harmonisation Assistant"),
         tags$button("Got it — don't show again ×",
                     class = "btn btn-sm btn-outline-secondary",
                     onclick = "Shiny.setInputValue('dismiss_welcome',Math.random(),{priority:'event'})")
@@ -1177,6 +1224,26 @@ server <- function(input, output, session) {
     all_ds <- rv$all_datasets
     a_df   <- rv$assignments
 
+    # Pre-compute disjoint wave status for this construct (show warning badge if disjoint)
+    wave_is_disjoint <- FALSE
+    if (!is.null(rv$all_vars) && "has_wave" %in% names(rv$all_vars)) {
+      asgn_active <- a_df[a_df$harmonised_name == hn & !is.na(a_df$excluded) &
+                            !a_df$excluded & !is.na(a_df$base_var), ]
+      if (nrow(asgn_active) >= 2L) {
+        wsets <- lapply(seq_len(nrow(asgn_active)), function(i) {
+          dsi <- asgn_active$dataset[i]; bvi <- asgn_active$base_var[i]
+          wrs <- rv$all_vars[rv$all_vars$dataset == dsi & !is.na(rv$all_vars$has_wave) &
+                               rv$all_vars$has_wave & !is.na(rv$all_vars$base_var) &
+                               rv$all_vars$base_var == bvi, ]
+          sort(unique(wrs$wave_num[!is.na(wrs$wave_num)]))
+        })
+        wsets <- Filter(function(w) length(w) > 0L, wsets)
+        if (length(wsets) >= 2L) {
+          wave_is_disjoint <- length(Reduce(intersect, wsets)) == 0L
+        }
+      }
+    }
+
     header <- tags$tr(
       tags$th("Dataset"), tags$th("Assigned variable"), tags$th("Waves"), tags$th("Actions")
     )
@@ -1194,9 +1261,13 @@ server <- function(input, output, session) {
                                rv$all_vars$has_wave & !is.na(rv$all_vars$base_var) &
                                rv$all_vars$base_var == bv, ]
         ws <- sort(unique(wrows$wave_label_std[!is.na(wrows$wave_label_std)]))
-        if (length(ws) == 0) "—" else if (length(ws) <= 4L) paste(ws, collapse=" ")
-        else paste0(ws[1L], "–", ws[length(ws)])
+        if (length(ws) == 0) "—" else if (length(ws) <= 4L) paste(ws, collapse = " ")
+        else paste0(ws[1L], "-", ws[length(ws)])
       } else "—"
+      wv_cell <- if (wave_is_disjoint && wv_text != "—")
+        tagList(wv_text, tags$span(class = "text-danger ms-1 small fw-bold",
+                                   title = "Disjoint waves — no shared timepoints with other datasets", "⚡"))
+      else wv_text
 
       safe_key <- paste0(hn, "|||", ds)
 
@@ -1265,7 +1336,7 @@ server <- function(input, output, session) {
       tags$tr(class = paste0("s-", st),
         tags$td(tags$strong(class = "small", ds)),
         tags$td(var_cell),
-        tags$td(class = "small text-muted", wv_text),
+        tags$td(class = "small text-muted", wv_cell),
         tags$td(action_btn)
       )
     })
@@ -1371,6 +1442,34 @@ server <- function(input, output, session) {
     )
   })
 
+  observeEvent(input$excl_noncategorical, {
+    hn  <- input$excl_noncategorical
+    av  <- rv$all_vars
+    if (is.null(hn) || is.null(av) || !"var_type" %in% names(av)) return()
+    asgn <- rv$assignments[rv$assignments$harmonised_name == hn &
+                             !is.na(rv$assignments$excluded) & !rv$assignments$excluded, ]
+    if (nrow(asgn) == 0L) return()
+    excl_ds <- character(0)
+    for (i in seq_len(nrow(asgn))) {
+      ds_i <- asgn$dataset[i]; bv_i <- asgn$base_var[i]
+      av_i <- av[!is.na(av$dataset) & av$dataset == ds_i &
+                   (!is.na(av$var_name) & av$var_name == bv_i |
+                    "base_var" %in% names(av) & !is.na(av$base_var) & av$base_var == bv_i), ]
+      if (nrow(av_i) > 0L && !any(av_i$var_type == "haven_labelled", na.rm = TRUE)) {
+        idx <- which(rv$assignments$harmonised_name == hn & rv$assignments$dataset == ds_i)
+        if (length(idx) > 0L) {
+          rv$assignments$excluded[idx[1L]] <- TRUE
+          excl_ds <- c(excl_ds, ds_i)
+        }
+      }
+    }
+    if (length(excl_ds) > 0L)
+      showNotification(paste0("Excluded: ", paste(excl_ds, collapse = ", ")),
+                       type = "message", duration = 3L)
+    else
+      showNotification("No non-categorical datasets found to exclude.", type = "warning", duration = 3L)
+  })
+
   # Column 3: recode alignment
   output$detail_col3 <- renderUI({
     hn  <- rv$active_construct
@@ -1385,6 +1484,38 @@ server <- function(input, output, session) {
     all_vars   <- rv$all_vars
     all_labels <- rv$all_labels
 
+    # Check for mixed categorical types (some haven_labelled, some not)
+    mixed_type_warning <- NULL
+    if (!is.null(all_vars) && "var_type" %in% names(all_vars)) {
+      var_types <- sapply(seq_len(nrow(a_df)), function(i) {
+        ds_i <- a_df$dataset[i]; bv_i <- a_df$base_var[i]
+        av_i <- all_vars[!is.na(all_vars$dataset) & all_vars$dataset == ds_i &
+                           (!is.na(all_vars$var_name) & all_vars$var_name == bv_i |
+                            "base_var" %in% names(all_vars) & !is.na(all_vars$base_var) &
+                            all_vars$base_var == bv_i), ]
+        if (nrow(av_i) == 0L) NA_character_
+        else if (any(av_i$var_type == "haven_labelled", na.rm = TRUE)) "haven_labelled"
+        else av_i$var_type[1L]
+      })
+      has_cat <- any(var_types == "haven_labelled", na.rm = TRUE)
+      has_num <- any(!is.na(var_types) & var_types != "haven_labelled")
+      if (has_cat && has_num) {
+        non_cat_ds <- a_df$dataset[!is.na(var_types) & var_types != "haven_labelled"]
+        mixed_type_warning <- div(class = "recode-warn-notice mb-2",
+          tags$strong("⚠ Mixed variable types"),
+          tags$p(class = "mb-0 mt-1 small",
+                 paste0("Not all datasets use categorical coding: ",
+                        paste(non_cat_ds, collapse = ", "),
+                        " appear to be numeric or continuous.")),
+          tags$button("Exclude non-categorical dataset(s)",
+                      class = "btn btn-sm btn-outline-warning mt-2",
+                      onclick = sprintf(
+                        "Shiny.setInputValue('excl_noncategorical','%s',{priority:'event'})",
+                        htmltools::htmlEscape(hn)))
+        )
+      }
+    }
+
     # Collect code sets per dataset
     datasets <- a_df$dataset
     code_sets <- lapply(seq_len(nrow(a_df)), function(i) {
@@ -1396,11 +1527,11 @@ server <- function(input, output, session) {
     has_labels <- any(sapply(code_sets, function(cs) !is.null(cs) && nrow(cs) > 0))
 
     if (!has_labels) {
-      return(div(class = "recode-ok-notice mt-2",
+      return(tagList(mixed_type_warning, div(class = "recode-ok-notice mt-2",
         tags$strong("✓ Numeric / no response codes"),
         tags$p(class = "mb-0 mt-1 small",
                "These variables have no value labels. No recode needed.")
-      ))
+      )))
     }
 
     # Union of all codes
@@ -1427,14 +1558,16 @@ server <- function(input, output, session) {
     # Get recode rules for this construct
     rr_hn <- rv$recode_rules[rv$recode_rules$harmonised_name == hn, , drop=FALSE]
 
-    # Get reference dataset (first with labels)
+    # Get reference dataset — user choice persisted in rv$recode_reference, else first with labels
     has_lbl_vec <- sapply(code_sets, function(x) !is.null(x) && nrow(x) > 0)
-    ref_ds <- datasets[has_lbl_vec][1L]
-
-    if (is.na(ref_ds)) ref_ds <- datasets[1L]
+    ref_ds_default <- datasets[has_lbl_vec][1L]
+    if (is.na(ref_ds_default)) ref_ds_default <- datasets[1L]
+    ref_ds <- rv$recode_reference[[hn]] %||% ref_ds_default
+    if (is.null(ref_ds) || is.na(ref_ds) || !ref_ds %in% datasets) ref_ds <- ref_ds_default
 
     if (all_same && nrow(rr_hn) == 0) {
       tagList(
+        mixed_type_warning,
         div(class = "recode-ok-notice",
           tags$strong("✓ Identical coding across all datasets"),
           tags$p(class = "mb-0 mt-1 small", "No recode needed.")
@@ -1481,6 +1614,7 @@ server <- function(input, output, session) {
           )
       )
       tagList(
+        mixed_type_warning,
         div(class = "recode-warn-notice mb-2",
           tags$strong("⚠ Response code differences detected"),
           tags$p(class = "mb-0 mt-1 small",
@@ -1637,6 +1771,13 @@ server <- function(input, output, session) {
     rv$recode_rules <- rv$recode_rules[rv$recode_rules$harmonised_name != hn, , drop=FALSE]
     showNotification("Recodes cleared.", type = "message", duration = 2L)
   })
+
+  # Store user's reference dataset choice so detail_col3 re-renders with correct ref
+  observeEvent(input$recode_ref_ds, {
+    hn <- rv$active_construct
+    if (is.null(hn) || is.null(input$recode_ref_ds) || nchar(input$recode_ref_ds) == 0) return()
+    rv$recode_reference[[hn]] <- input$recode_ref_ds
+  }, ignoreNULL = TRUE, ignoreInit = TRUE)
 
   # ── Variable Search — banner only (filter bar is now static in ui) ──────────
 
@@ -2278,21 +2419,39 @@ server <- function(input, output, session) {
   output$btn_download_r <- downloadHandler(
     filename = function() paste0("harmonisation_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".R"),
     content  = function(file) {
-      writeLines(.make_r_script(), file)
-      showNotification(
-        tagList(
-          tags$strong("R script generated."),
-          tags$br(),
-          "Set ", tags$code('data_folder <- "YOUR/PATH"'),
-          " at the top of the script before running."
-        ),
-        type = "message", duration = 8L
-      )
+      tryCatch({
+        script_text <- .make_r_script()
+        writeLines(script_text, file)
+        showNotification(
+          tagList(
+            tags$strong("R script generated."),
+            tags$br(),
+            "Set ", tags$code('data_folder <- "YOUR/PATH"'),
+            " at the top of the script before running."
+          ),
+          type = "message", duration = 8L
+        )
+      }, error = function(e) {
+        msg <- conditionMessage(e)
+        cat("CODE GEN ERROR:", msg, "\n")
+        writeLines(c("# Code generation failed — see R console for details.",
+                     paste("#", msg)), file)
+        showNotification(paste("Code generation failed:", msg), type = "error", duration = 12L)
+      })
     }
   )
   output$btn_download_r2 <- downloadHandler(
     filename = function() paste0("harmonisation_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".R"),
-    content  = function(file) writeLines(.make_r_script(), file)
+    content  = function(file) {
+      tryCatch({
+        writeLines(.make_r_script(), file)
+      }, error = function(e) {
+        msg <- conditionMessage(e)
+        cat("CODE GEN ERROR:", msg, "\n")
+        writeLines(c("# Code generation failed — see R console for details.",
+                     paste("#", msg)), file)
+      })
+    }
   )
 
   output$btn_export_mapping <- downloadHandler(
